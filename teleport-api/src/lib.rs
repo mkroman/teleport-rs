@@ -1,3 +1,5 @@
+#![allow(clippy::pedantic, clippy::large_enum_variant)]
+
 pub mod teleport {
     tonic::include_proto!("proto");
 

@@ -1,6 +1,6 @@
 # teleport-rs
 
-A Rust implementation of a Teleport API client.
+An attempt to implement an API client for Teleport in Rust.
 
 # License
 
