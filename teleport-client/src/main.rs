@@ -90,10 +90,9 @@ async fn main() -> miette::Result<()> {
         .expect("unable to get HOME directory")
         .join(PROFILE_DIR);
 
-    let profile = match current_profile_name(&tsh_dir) {
-        Some(profile_name) => load_profile(&tsh_dir, profile_name.as_str())?,
-        None => panic!("a preinitialized tsh profile is required"),
-    };
+    let profile_name =
+        current_profile_name(&tsh_dir).expect("a preinitialized tsh profile is required");
+    let profile = load_profile(&tsh_dir, profile_name.as_str())?;
 
     debug!(?profile, "loaded profile");
 
@@ -102,7 +101,7 @@ async fn main() -> miette::Result<()> {
 
     let user = profile.user.unwrap();
     let cluster = profile.cluster.unwrap();
-    let cluster_keys_dir = tsh_dir.join("keys").join(&cluster);
+    let cluster_keys_dir = tsh_dir.join("keys").join(&profile_name);
 
     let ca_path = cluster_keys_dir
         .join("cas")
