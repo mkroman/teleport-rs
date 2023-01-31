@@ -5,11 +5,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+async-trait = "0.1.64"
 dirs = "4.0.0"
 hyper = { version = "0.14.23", features = ["http2"] }
 hyper-rustls = { version = "0.23.2", features = ["http2"] }
 miette = { version = "5.5.0", features = ["fancy"] }
 rsa = "0.8.1"
+russh = { version = "0.36.0", features = ["openssl"] }
+russh-keys = { version = "0.24.0", features = ["openssl"] }
 rustls-native-certs = "0.6.2"
 rustls-pemfile = "1.0.2"
 serde = { version = "1.0", features = ["derive"] }

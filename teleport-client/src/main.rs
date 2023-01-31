@@ -1,16 +1,17 @@
 use std::fs;
 use std::io::BufReader;
 use std::path::Path;
+use std::sync::Arc;
 
-use hyper::{client::HttpConnector, Uri};
+use async_trait::async_trait;
 use miette::{IntoDiagnostic, WrapErr};
+use russh::ChannelId;
+use russh_keys::key;
 use rustls_pemfile::Item;
 use serde::Deserialize;
-use tokio_rustls::rustls::{Certificate, ClientConfig, PrivateKey, RootCertStore};
+use tokio_rustls::rustls::{Certificate, ClientConfig, PrivateKey, RootCertStore, ServerName};
+use tokio_rustls::TlsConnector;
 use tracing::{debug, info, trace};
-
-use teleport_api::teleport::PingRequest;
-use teleport_api::AuthServiceClient;
 
 mod client;
 mod webclient;
@@ -53,6 +54,41 @@ struct Profile {
     pub mfa_mode: Option<String>,
 }
 
+struct SshClient {}
+
+#[derive(thiserror::Error, miette::Diagnostic, Debug)]
+enum ErrorWrapper {
+    #[error(transparent)]
+    Ssh(#[from] russh::Error),
+}
+
+#[async_trait]
+impl russh::client::Handler for SshClient {
+    type Error = ErrorWrapper;
+
+    async fn check_server_key(
+        self,
+        server_public_key: &key::PublicKey,
+    ) -> Result<(Self, bool), Self::Error> {
+        println!("check_server_key: {server_public_key:?}");
+        Ok((self, true))
+    }
+
+    async fn data(
+        self,
+        channel: ChannelId,
+        data: &[u8],
+        session: russh::client::Session,
+    ) -> Result<(Self, russh::client::Session), Self::Error> {
+        println!(
+            "data on channel {:?}: {:?}",
+            channel,
+            std::str::from_utf8(data)
+        );
+        Ok((self, session))
+    }
+}
+
 /// Attempts to read the name of the active `tsh` profile, which is stored in
 /// `~/.tsh/current-profile`.
 ///
@@ -65,13 +101,13 @@ fn current_profile_name(base_dir: &Path) -> Option<String> {
 }
 
 fn load_profile(base_dir: &Path, profile_name: &str) -> miette::Result<Profile> {
-    let profile_path = base_dir.join(format!("{}.yaml", profile_name));
+    let profile_path = base_dir.join(format!("{profile_name}.yaml"));
 
     trace!(?profile_name, ?profile_path, "opening profile");
 
     let file = fs::File::open(&profile_path)
         .into_diagnostic()
-        .with_context(|| format!("Opening profile {:?}", profile_path))?;
+        .with_context(|| format!("Opening profile {profile_path:?}"))?;
 
     trace!(?profile_name, ?profile_path, "parsing profile");
 
@@ -96,9 +132,6 @@ async fn main() -> miette::Result<()> {
 
     debug!(?profile, "loaded profile");
 
-    let host = profile.web_proxy_addr.unwrap();
-    let addr = format!("https://{}", host);
-
     let user = profile.user.unwrap();
     let cluster = profile.cluster.unwrap();
     let cluster_keys_dir = tsh_dir.join("keys").join(&profile_name);
@@ -106,7 +139,7 @@ async fn main() -> miette::Result<()> {
     let ca_path = cluster_keys_dir
         .join("cas")
         .join(format!("{}.pem", &cluster));
-    let cert_path = cluster_keys_dir.join(format!("{}-x509.pem", user));
+    let cert_path = cluster_keys_dir.join(format!("{user}-x509.pem"));
     let key_path = cluster_keys_dir.join(user);
 
     info!(?ca_path, ?cert_path, ?key_path, "Loading TLS identity");
@@ -114,29 +147,21 @@ async fn main() -> miette::Result<()> {
     let mut cert_file = BufReader::new(std::fs::File::open(cert_path).into_diagnostic()?);
     let mut key_file = BufReader::new(std::fs::File::open(key_path).into_diagnostic()?);
 
-    let ca_cert_der = if let Item::X509Certificate(data) = rustls_pemfile::read_one(&mut ca_file)
+    let Item::X509Certificate(ca_cert_der) = rustls_pemfile::read_one(&mut ca_file)
         .into_diagnostic()?
-        .ok_or_else(|| miette::miette!("Invalid X509 certificate"))?
-    {
-        data
-    } else {
+        .ok_or_else(|| miette::miette!("Invalid X.509 certificate"))? else {
+            unimplemented!()
+        };
+
+    let Item::X509Certificate(cert_der) = rustls_pemfile::read_one(&mut cert_file)
+        .into_diagnostic()?
+        .ok_or_else(|| miette::miette!("Invalid X.509 certificate"))? else {
         unimplemented!()
     };
 
-    let cert_der = if let Item::X509Certificate(data) = rustls_pemfile::read_one(&mut cert_file)
+    let Item::RSAKey(key_der) = rustls_pemfile::read_one(&mut key_file)
         .into_diagnostic()?
-        .ok_or_else(|| miette::miette!("Invalid x509 certificate"))?
-    {
-        data
-    } else {
-        unimplemented!()
-    };
-    let key_der = if let Item::RSAKey(data) = rustls_pemfile::read_one(&mut key_file)
-        .into_diagnostic()?
-        .ok_or_else(|| miette::miette!("Invalid PEM RSA key"))?
-    {
-        data
-    } else {
+        .ok_or_else(|| miette::miette!("Invalid PEM RSA key"))? else {
         unimplemented!()
     };
 
@@ -159,26 +184,55 @@ async fn main() -> miette::Result<()> {
 
     tls.alpn_protocols = vec![b"teleport-proxy-ssh".to_vec()];
 
-    let mut http = HttpConnector::new();
-    http.enforce_http(false);
+    let connector = TlsConnector::from(Arc::new(tls));
+    let proxy_addr = profile
+        .web_proxy_addr
+        .as_ref()
+        .expect("no web_proxy_addr in profile");
+    let server_name = ServerName::try_from("localhost").into_diagnostic()?;
 
-    let connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(tls)
-        .https_or_http()
-        .enable_http2()
-        .build();
+    debug!(?server_name);
 
-    let uri = Uri::from_maybe_shared(addr).into_diagnostic()?;
-    let client = hyper::Client::builder().build(connector);
-
-    let mut auth_service = AuthServiceClient::with_origin(client, uri);
-
-    info!(?auth_service);
-    let res = auth_service
-        .ping(PingRequest::default())
+    let stream = tokio::net::TcpStream::connect(proxy_addr.as_str())
         .await
         .into_diagnostic()?;
-    info!(?res);
+    let stream = connector
+        .connect(server_name, stream)
+        .await
+        .into_diagnostic()
+        .context("tls handshake")?;
+
+    let ssh_config = russh::client::Config::default();
+    let ssh_config = Arc::new(ssh_config);
+    let sh = SshClient {};
+
+    let key = russh_keys::key::KeyPair::generate_ed25519().unwrap();
+    let mut agent = russh_keys::agent::client::AgentClient::connect_env()
+        .await
+        .unwrap();
+    agent.add_identity(&key, &[]).await.unwrap();
+
+    let mut session = russh::client::connect_stream(ssh_config, stream, sh)
+        .await
+        .into_diagnostic()
+        .context("connect_stream")?;
+
+    if session
+        .authenticate_future(
+            std::env::var("USER").unwrap_or("user".to_owned()),
+            key.clone_public_key().unwrap(),
+            agent,
+        )
+        .await
+        .1
+        .unwrap()
+    {
+        let mut channel = session.channel_open_session().await.unwrap();
+        channel.data(&b"Hello, world!"[..]).await.unwrap();
+        if let Some(msg) = channel.wait().await {
+            println!("{msg:?}");
+        }
+    }
 
     Ok(())
 }
