@@ -1,0 +1,12 @@
+# The address that the Teleport proxy is bound to on the host.
+TELEPORT_EXPOSED_PROXY_ADDR=localhost
+# The port that the Teleport proxy is bound to on the host.
+TELEPORT_EXPOSED_PROXY_PORT=3080
+# The name of the docker compose service running the Teleport auth service.
+TELEPORT_AUTH_SERVICE_NAME=teleport-auth
+# Space-separated list of users to create with the access, audit and editor roles.
+TELEPORT_ADMIN_USERS="foo"
+# Space-separated list of users to create with the access role.
+TELEPORT_REGULAR_USERS="baz"
+
+# vim: ft=bash

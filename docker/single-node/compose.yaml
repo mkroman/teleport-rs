@@ -1,0 +1,22 @@
+services:
+  teleport-auth:
+    image: public.ecr.aws/gravitational/teleport:${TELEPORT_VERSION:-11.2.3}
+    command: ["--debug"]
+    volumes:
+    - ./teleport.yaml:/etc/teleport/teleport.yaml
+    ports:
+    - 3080:3080
+    - 3025:3025
+    networks:
+      shared:
+        ipv4_address: 172.10.1.1
+
+networks:
+  shared:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+      - subnet: 172.10.1.0/16
+        ip_range: 172.10.1.0/24
+        gateway: 172.10.1.254

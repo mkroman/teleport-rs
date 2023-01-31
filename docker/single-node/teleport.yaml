@@ -1,0 +1,29 @@
+version: v3
+teleport:
+  nodename: cluster-1
+  data_dir: /var/lib/teleport
+  log:
+    output: stderr
+    severity: DEBUG
+    format:
+      output: text
+  ca_pin: ""
+  diag_addr: ""
+  advertise_ip: 172.10.1.1
+auth_service:
+  enabled: "yes"
+  listen_addr: 0.0.0.0:3025
+  proxy_listener_mode: multiplex
+  tokens:
+  - node,proxy,auth:foo
+  public_addr: localhost:3080
+  authentication:
+    second_factor: "off"
+ssh_service:
+  enabled: "false"
+proxy_service:
+  enabled: "yes"
+  https_keypairs: []
+  https_keypairs_reload_interval: 0s
+  acme: {}
+  public_addr: localhost:3080
